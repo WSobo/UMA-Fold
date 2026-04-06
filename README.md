@@ -132,3 +132,11 @@ Disable W&B entirely:
 ```bash
 python scripts/train.py wandb.enabled=false
 ```
+
+---
+
+## References
+
+The Pairmixer architecture is inspired by:
+
+> Ouyang-Zhang, J., Murugan, P., Diaz, D. J., Scarpellini, G., Bowen, R. S., Gruver, N., Klivans, A., Krähenbühl, P., Faust, A., & Al-Shedivat, M. (2025). *Triangle Multiplication Is All You Need For Biomolecular Structure Representations*. arXiv:2510.18870 [q-bio.QM]. https://arxiv.org/abs/2510.18870
