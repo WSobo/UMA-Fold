@@ -1,0 +1,21 @@
+# configs/model/pairmixer.yaml
+# Hyperparameters for the UMA-Fold Pairmixer backbone
+
+# ── Pair representation ──────────────────────────────────────────────────────
+pair_dim: 128           # d_pair  – hidden dimension of pair embeddings
+single_dim: 64          # d_single – single (per-residue) representation dim
+
+# ── Pairmixer block ──────────────────────────────────────────────────────────
+num_blocks: 8           # number of stacked PairmixerBlock layers
+ffn_expansion: 4        # feed-forward hidden = pair_dim * ffn_expansion
+dropout_rate: 0.1       # standard dropout probability
+
+# ── Low-norm dropout (memory-efficient triangle ops) ─────────────────────────
+# Drops the lowest-magnitude features during triangle multiplications.
+low_norm_dropout:
+  enabled: true
+  keep_fraction: 0.75   # fraction of features retained (discard bottom 25 %)
+
+# ── Input / output ────────────────────────────────────────────────────────────
+max_seq_len: 512        # maximum residue sequence length
+num_tokens: 21          # amino-acid vocabulary size (20 AA + unknown)
