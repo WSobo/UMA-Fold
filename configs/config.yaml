@@ -40,6 +40,21 @@ model:
   
   diffusion_args:
     accumulate_token_repr: True
+  
+  # Ensure the Diffusion Module remains ultra-lightweight and respects SO(3)
+  # geometry limits so as not to overwhelm the A5500 during fine-tuning
+  score_model_args:
+    sigma_data: 16
+    dim_fourier: 256
+    atom_encoder_depth: 3
+    atom_encoder_heads: 4
+    token_transformer_depth: 8 # Shaved down from standard 24 for hyper-lightweight goal
+    token_transformer_heads: 8
+    atom_decoder_depth: 3
+    atom_decoder_heads: 4
+    conditioning_transition_layers: 2
+    activation_checkpointing: True # Crucial for 24GB VRAM
+    offload_to_cpu: False
 
 # --- DataModule Setup (Piped straight to Boltz) ---
 data:
