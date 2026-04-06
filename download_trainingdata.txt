@@ -2,14 +2,14 @@ mkdir -p data/raw/
 cd data/raw/
 
 # 1. Get the PDB structures
-wget https://boltz1.s3.us-east-2.amazonaws.com/rcsb_processed_targets.tar
+wget --progress=dot:giga https://boltz1.s3.us-east-2.amazonaws.com/rcsb_processed_targets.tar
 tar -xf rcsb_processed_targets.tar
 rm rcsb_processed_targets.tar
 
 # 2. Get the PDB MSAs
-wget https://boltz1.s3.us-east-2.amazonaws.com/rcsb_processed_msa.tar
+wget --progress=dot:giga https://boltz1.s3.us-east-2.amazonaws.com/rcsb_processed_msa.tar
 tar -xf rcsb_processed_msa.tar
 rm rcsb_processed_msa.tar
 
 # 3. Get the symmetry file (required for the loss function)
-wget https://boltz1.s3.us-east-2.amazonaws.com/symmetry.pkl
+wget --progress=dot:giga https://boltz1.s3.us-east-2.amazonaws.com/symmetry.pkl

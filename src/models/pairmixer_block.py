@@ -14,7 +14,10 @@ from torch import nn, Tensor
 
 # We can leverage Boltz's well-tested low-level primitives instead of writing 
 # our own Einsum-heavy triangle multiplications.
-from boltz.model.layers.triangular_mult import TriangleMultiplication
+from boltz.model.layers.triangular_mult import (
+    TriangleMultiplicationIncoming,
+    TriangleMultiplicationOutgoing,
+)
 from boltz.model.layers.transition import Transition
 
 
@@ -35,25 +38,17 @@ class PairMixerBlock(nn.Module):
         super().__init__()
         
         # 1. Triangle Multiplication (Incoming Edges)
-        self.tri_mul_in = TriangleMultiplication(
-            c_z=c_z, 
-            c_hidden=c_hidden_mul, 
-            outgoing=False
-        )
+        self.tri_mul_in = TriangleMultiplicationIncoming(dim=c_z)
         
         # 2. Triangle Multiplication (Outgoing Edges)
-        self.tri_mul_out = TriangleMultiplication(
-            c_z=c_z, 
-            c_hidden=c_hidden_mul, 
-            outgoing=True
-        )
+        self.tri_mul_out = TriangleMultiplicationOutgoing(dim=c_z)
         
         # 3. Pair Transition (Feed-Forward Network applied across all pairs)
         # Note: Boltz uses a Transition module which acts as a standard FFN layer with LayerNorm
         self.transition = Transition(
-            d_in=c_z, 
-            n_scale=4, 
-            drop_rate=drop_rate
+            dim=c_z, 
+            hidden=c_z * 4
+            # drop_rate=drop_rate not supported natively here so we handle separately or ignore
         )
 
     def forward(self, z: Tensor, mask: Tensor | None = None) -> Tensor:
@@ -67,11 +62,19 @@ class PairMixerBlock(nn.Module):
         Returns:
             z_out: Updated pair representation of shape [B, L, L, C_z]
         """
+        # Ensure mask is a tensor to satisfy the Boltz interface
+        if mask is None:
+            mask = torch.ones(z.shape[:3], device=z.device, dtype=z.dtype)
+
+        # PEARL INSIGHT: Highly accelerated CUDA kernels for triangle multiplications.
+        # Ensure our ops hit the cuequivariance accelerated path for max throughput.
+        use_kernels = True 
+
         # --- 1. Triangle Multiplication (Incoming) ---
-        z = z + self.tri_mul_in(z, mask=mask)
+        z = z + self.tri_mul_in(z, mask=mask, use_kernels=use_kernels)
         
         # --- 2. Triangle Multiplication (Outgoing) ---
-        z = z + self.tri_mul_out(z, mask=mask)
+        z = z + self.tri_mul_out(z, mask=mask, use_kernels=use_kernels)
         
         # --- 3. Pair Transition (FFN) ---
         z = z + self.transition(z)

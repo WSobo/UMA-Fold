@@ -28,13 +28,8 @@ This checklist walks you through the entire end-to-end pipeline, starting from a
   ```
 
 ### Phase 3: Configuration Finalization
-- [ ] **Finalize `configs/config.yaml` Data Loaders:** 
+- [x] **Finalize `configs/config.yaml` Data Loaders:** 
   Currently, `configs/config.yaml` has placeholders for `datasets:` and `featurizer:`. You will need to explicitly point these lists to your specific downloaded `data/raw/` folders matching the physical structure of your dataset once extracted. (You can reference `boltz/configs/data/default.yaml` for exact syntax shapes).
-- [ ] **Weights & Biases Login:**
-  ```bash
-  wandb login
-  ```
-  Ensure your run metrics are appropriately streaming to your cloud dashboard.
 
 ### Phase 4: Sanity Testing (The Pilot Run)
 - [ ] **Execute Pilot Run:** 

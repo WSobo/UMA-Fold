@@ -80,7 +80,11 @@ def main(cfg: DictConfig):
 
     # 7. Train!
     print("Beginning Training...")
-    trainer.fit(model, datamodule=data_module)
+    ckpt_path = cfg.training.get("ckpt_path", None)
+    if ckpt_path is not None and not os.path.exists(ckpt_path):
+        print(f"Warning: Checkpoint {ckpt_path} not found. Starting from scratch.")
+        ckpt_path = None
+    trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
 
 
 if __name__ == "__main__":
