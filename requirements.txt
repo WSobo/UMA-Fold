@@ -1,6 +1,29 @@
-# Core deep learning
-torch>=2.2.0
-torchvision>=0.17.0
+# ==============================================================================
+# UMA-Fold Installation & Setup Guide
+# ==============================================================================
+
+# 1. Create and activate a fresh Conda environment
+# conda create -n uma-fold python=3.11 -y
+# conda activate uma-fold
+
+# 2. Clone the UMA-Fold repository (if you haven't already)
+# git clone https://github.com/yourusername/UMA-Fold.git
+# cd UMA-Fold
+
+# 3. Clone and install the Boltz repository as an editable package
+#    (We rely on Boltz for the data loading and processing ecosystem)
+# git clone https://github.com/jwohlwend/boltz.git
+# pip install -e ./boltz
+
+# 4. Install PyTorch with CUDA support (adjust for your specific setup)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# 5. Install the remaining UMA-Fold requirements
+# pip install -r requirements.txt
+
+# ==============================================================================
+# Python Packages
+# ==============================================================================
 
 # PyTorch Lightning – training loop abstraction
 pytorch-lightning>=2.2.0
@@ -15,22 +38,11 @@ wandb>=0.16.0
 # Tensor manipulation helpers
 einops>=0.7.0
 
-# Equivariant neural network primitives — intended for future use as an
-# optional equivariant feature encoder for atomic-level inputs.
-# Install separately once a matching wheel is available for your CUDA version:
-#   pip install cuequivariance
-# cuequivariance>=0.1.0
-
 # Structural biology / data I/O
 biopython>=1.83
 numpy>=1.26.0
 
-# Visualisation helpers (PyMOL must be installed separately via conda or the pymol.org wheel)
-# pymol-open-source>=2.5.0
-
-# Testing
+# Testing & Code quality
 pytest>=8.0.0
 pytest-cov>=5.0.0
-
-# Code quality
 ruff>=0.4.0

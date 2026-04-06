@@ -1,16 +1,13 @@
 # configs/data/default.yaml
-# Data pipeline settings for UMA-Fold
 
-# ── Dataset paths (relative to paths.data_dir from config.yaml) ─────────────
-train_split: raw/train.csv
-val_split: raw/val.csv
-test_split: raw/test.csv
+_target_: src.data.datamodule.UMAFoldDataModule
+target_dir: ${paths.data_dir}/raw/rcsb_processed_targets
+msa_dir: ${paths.data_dir}/raw/rcsb_processed_msa
+symmetries_path: ${paths.data_dir}/raw/symmetry.pkl
 
-# ── DataLoader ────────────────────────────────────────────────────────────────
-batch_size: 4
+# Aggressive cropping for 24GB VRAM
+max_tokens: 256
+max_atoms: 2304
+
+batch_size: 1
 num_workers: 4
-pin_memory: true
-
-# ── Preprocessing ─────────────────────────────────────────────────────────────
-max_seq_len: ${model.max_seq_len}   # inherits from model config
-crop_long_sequences: true            # randomly crop sequences > max_seq_len

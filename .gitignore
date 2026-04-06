@@ -30,6 +30,7 @@ checkpoints/
 *.ckpt
 *.pt
 *.pth
+docs/
 
 # Hydra outputs
 outputs/
@@ -52,3 +53,6 @@ Thumbs.db
 # Misc
 *.log
 *.tmp
+
+#boltz repo
+boltz/
