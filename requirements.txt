@@ -7,7 +7,7 @@
 # conda activate uma-fold
 
 # 2. Clone the UMA-Fold repository (if you haven't already)
-# git clone https://github.com/yourusername/UMA-Fold.git
+# git clone https://github.com/WSobo/UMA-Fold.git
 # cd UMA-Fold
 
 # 3. Clone and install the Boltz repository as an editable package

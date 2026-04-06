@@ -1,178 +1,94 @@
 """
 src/models/uma_fold.py
 ──────────────────────
-Top-level UMA-Fold model.
-
-Architecture overview
-─────────────────────
-1. Input embedding  : token IDs → single representation (d_single)
-                      outer-product mix → initial pair representation (d_pair)
-2. Pairmixer trunk  : N stacked PairmixerBlocks (attention-free)
-3. Structure head   : pair representation → per-residue 3-D coordinates
-                      (simplified linear head; replace with IPA or diffusion
-                      head for a full production model)
-
-All trunk computations run in bfloat16 via the cast_to_trunk_dtype context
-provided in src/utils/precision.py.  Numerically sensitive operations
-(softmax, loss) should be kept in fp32 by the caller.
+Main UMA-Fold model architecture.
+Implements the PairMixer backbone with gradient checkpointing optimized for 
+24GB VRAM consumer GPUs (e.g., A5500, RTX 4090).
 """
 
-from __future__ import annotations
-
-from typing import Optional
-
 import torch
-import torch.nn as nn
+from torch import nn, Tensor
+from torch.utils.checkpoint import checkpoint
+from typing import Optional, Dict
 
-from src.models.pairmixer_block import PairmixerBlock
-from src.utils.precision import cast_to_trunk_dtype
+from .pairmixer_block import PairMixerBlock
 
-
-class InputEmbedding(nn.Module):
-    """Map token IDs to single + pair representations.
-
-    Args:
-        num_tokens: Vocabulary size (default 21: 20 AAs + unknown).
-        single_dim: Dimension of per-residue single representation.
-        pair_dim:   Dimension of pair representation.
+class PairMixerBackbone(nn.Module):
     """
-
-    def __init__(self, num_tokens: int = 21, single_dim: int = 64, pair_dim: int = 128) -> None:
-        super().__init__()
-        self.token_embed = nn.Embedding(num_tokens, single_dim)
-        # Pair initialisation: outer-product of single embeddings projected to pair_dim
-        self.pair_proj = nn.Linear(single_dim * single_dim, pair_dim, bias=False)
-
-        nn.init.xavier_uniform_(self.pair_proj.weight)
-
-    def forward(self, token_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            token_ids: [B, N] integer token IDs.
-
-        Returns:
-            single: [B, N, d_single]
-            pair:   [B, N, N, d_pair]
-        """
-        # Single representation
-        single = self.token_embed(token_ids)          # [B, N, d_s]
-
-        # Pair initialisation via outer product
-        # outer_{b,i,j,d_s*d_s} = single_{b,i,:} ⊗ single_{b,j,:}
-        s_i = single.unsqueeze(2)                     # [B, N, 1, d_s]
-        s_j = single.unsqueeze(1)                     # [B, 1, N, d_s]
-        outer = (s_i * s_j).reshape(
-            single.shape[0], single.shape[1], single.shape[1], -1
-        )                                             # [B, N, N, d_s^2]
-        pair = self.pair_proj(outer)                  # [B, N, N, d_pair]
-
-        return single, pair
-
-
-class StructureHead(nn.Module):
-    """Lightweight head: pair representation → 3-D Cα coordinates.
-
-    This is a placeholder.  A production head should implement an Invariant
-    Point Attention (IPA) or diffusion-based coordinate decoder.
-
-    Args:
-        pair_dim:   Input pair representation dimension.
-        single_dim: Input single representation dimension.
+    The hyper-lightweight PairMixer backbone.
+    Stack of PairMixer blocks replacing the original Pairformer.
+    Includes built-in Gradient Checkpointing for massive VRAM savings.
     """
-
-    def __init__(self, pair_dim: int = 128, single_dim: int = 64) -> None:
+    def __init__(
+        self,
+        num_blocks: int = 12, # 12 layers = Small model from paper, perfect for single GPU
+        c_z: int = 128,
+        c_hidden_mul: int = 128,
+        drop_rate: float = 0.0,
+        gradient_checkpointing: bool = True
+    ):
         super().__init__()
-        self.norm = nn.LayerNorm(single_dim + pair_dim)
-        self.coord_head = nn.Linear(single_dim + pair_dim, 3, bias=True)        nn.init.zeros_(self.coord_head.weight)
-        nn.init.zeros_(self.coord_head.bias)
+        self.gradient_checkpointing = gradient_checkpointing
+        self.blocks = nn.ModuleList([
+            PairMixerBlock(c_z=c_z, c_hidden_mul=c_hidden_mul, drop_rate=drop_rate)
+            for _ in range(num_blocks)
+        ])
 
-    def forward(self, single: torch.Tensor, pair: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            single: [B, N, d_single]
-            pair:   [B, N, N, d_pair]   (summed over j to collapse pair dim)
-
-        Returns:
-            coords: [B, N, 3] predicted Cα coordinates
-        """
-        # Aggregate pair information per residue i (mean over j)
-        pair_agg = pair.mean(dim=2)                   # [B, N, d_pair]
-        combined = torch.cat([single, pair_agg], dim=-1)  # [B, N, d_s+d_p]
-        # Cast to fp32: LayerNorm computes running mean/variance which can
-        # overflow or underflow in bfloat16, causing numerical instability.
-        combined = self.norm(combined.float())
-        return self.coord_head(combined)              # [B, N, 3]
+    def forward(self, z: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        for block in self.blocks:
+            # VRAM optimization: Trade compute for memory by checkpointing activations
+            if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+                # use_reentrant=False is the PyTorch 2.x recommended standard
+                z = checkpoint(block, z, mask, use_reentrant=False)
+            else:
+                z = block(z, mask)
+        return z
 
 
 class UMAFold(nn.Module):
-    """UMA-Fold: Ultra-lightweight, attention-free biomolecular structure predictor.
-
-    Args:
-        num_tokens:                    Vocabulary size.
-        single_dim:                    Single representation dimension.
-        pair_dim:                      Pair representation dimension.
-        num_blocks:                    Number of PairmixerBlocks.
-        ffn_expansion:                 FFN expansion factor.
-        dropout_rate:                  Standard dropout probability.
-        low_norm_dropout_enabled:      Enable low-norm dropout in triangle ops.
-        low_norm_dropout_fraction:     Keep-fraction for low-norm dropout.
-        trunk_dtype:                   dtype for trunk computations (bfloat16).
     """
-
-    def __init__(
-        self,
-        num_tokens: int = 21,
-        single_dim: int = 64,
-        pair_dim: int = 128,
-        num_blocks: int = 8,
-        ffn_expansion: int = 4,
-        dropout_rate: float = 0.1,
-        low_norm_dropout_enabled: bool = True,
-        low_norm_dropout_fraction: float = 0.75,
-        trunk_dtype: torch.dtype = torch.bfloat16,
-    ) -> None:
+    Main UMA-Fold architecture shell linking Embedder, PairMixer Backbone, and Diffusion.
+    """
+    def __init__(self, config: dict):
         super().__init__()
-        self.trunk_dtype = trunk_dtype
-
-        self.input_embedding = InputEmbedding(
-            num_tokens=num_tokens,
-            single_dim=single_dim,
-            pair_dim=pair_dim,
+        self.c_z = config.get("c_z", 128)
+        
+        # 1. (Placeholder) Input / MSA Embedder
+        # We will wrap Boltz's data dictionary into initial s and z representations here.
+        # self.embedder = BoltzInputEmbedder(...)
+        
+        # 2. Our highly-optimized PairMixer Backbone
+        self.backbone = PairMixerBackbone(
+            num_blocks=config.get("num_blocks", 12),
+            c_z=self.c_z,
+            c_hidden_mul=config.get("c_hidden_mul", 128),
+            drop_rate=config.get("drop_rate", 0.0),
+            gradient_checkpointing=config.get("gradient_checkpointing", True)
         )
+        
+        # 3. (Placeholder) Diffusion Module
+        # self.diffusion = BoltzDiffusionModule(...)
 
-        self.blocks = nn.ModuleList(
-            [
-                PairmixerBlock(
-                    pair_dim=pair_dim,
-                    ffn_expansion=ffn_expansion,
-                    dropout_rate=dropout_rate,
-                    low_norm_dropout_enabled=low_norm_dropout_enabled,
-                    low_norm_dropout_fraction=low_norm_dropout_fraction,
-                )
-                for _ in range(num_blocks)
-            ]
-        )
-
-        self.structure_head = StructureHead(pair_dim=pair_dim, single_dim=single_dim)
-
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """End-to-end forward pass.
-
-        Args:
-            token_ids: [B, N] integer token IDs.
-
-        Returns:
-            coords: [B, N, 3] predicted Cα coordinates (float32).
+    def forward(self, batch: dict) -> dict:
         """
-        single, pair = self.input_embedding(token_ids)
-
-        # Run Pairmixer trunk in bfloat16 for memory efficiency
-        with cast_to_trunk_dtype(self.trunk_dtype):
-            single = single.to(self.trunk_dtype)
-            pair = pair.to(self.trunk_dtype)
-            for block in self.blocks:
-                pair = block(pair)
-
-        # Structure head operates in fp32 for numerical stability
-        coords = self.structure_head(single.float(), pair.float())
-        return coords
+        Forward pass mimicking the structure prediction pipeline.
+        """
+        # --- Step 1: Embedding ---
+        # s_init, z_init = self.embedder(batch)
+        
+        # NOTE: Placeholder inputs used for structural integrity testing
+        # B = batch size, L = sequence length
+        B, L = 1, 256 
+        device = next(self.parameters()).device
+        s_init = torch.zeros((B, L, self.c_z), device=device) # Dummy sequences
+        z_init = torch.zeros((B, L, L, self.c_z), device=device) # Dummy pairs
+        mask = torch.ones((B, L, L), device=device)
+        
+        # --- Step 2: Backbone (Only updates z!) ---
+        # Notice how s_init bypasses the backbone entirely: massive VRAM memory save!
+        z_backbone = self.backbone(z_init, mask)
+        
+        # --- Step 3: Diffusion ---
+        # coords = self.diffusion(s_init, z_backbone)
+        
+        return {"z_out": z_backbone}  # Returning z_out until diffusion is wired
