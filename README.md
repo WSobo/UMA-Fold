@@ -1,8 +1,8 @@
-# UMA-Fold 🧬 (Unofficial PairMixer Implementation)
+# UMA-Fold 🧬 (Unofficial PairMixer & PEARL-inspired Architecture)
 
-**UMA-Fold** is a personal, educational project aimed at independently implementing the architecture described in the preprint [**"Triangle Multiplication is All You Need for Biomolecular Structure Representations" (PairMixer)**] by researchers at Genesis Research and UT Austin.
+**UMA-Fold** is a personal, educational project aimed at independently implementing the architecture described in the preprint [**"Triangle Multiplication is All You Need for Biomolecular Structure Representations" (PairMixer)**] by researchers at Genesis Molecular AI and UT Austin, while incorporating key methodology from the [**PEARL**] technical report by the Genesis Research Team.
 
-⚠️ **Disclaimer:** I am not affiliated with Genesis Therapeutics or UT Austin, nor am I the inventor of this architecture. This repository is purely a personal learning exercise to understand and reproduce their impressive hyper-lightweight biomolecular structure prediction backbone. Full credit for the PairMixer architecture, theoretical breakthroughs, and structural insights goes to the original authors (Jeffrey Ouyang-Zhang, Pranav Murugan, Daniel J. Diaz, et al.). 
+⚠️ **Disclaimer:** I am not affiliated with Genesis Molecular AI or UT Austin, nor am I the inventor of these architectures. This repository is purely a personal learning exercise to understand and reproduce their impressive hyper-lightweight biomolecular structure prediction backbone and diffusion pipeline optimizations. Full credit for the PairMixer architecture, the PEARL foundation model, theoretical breakthroughs, and structural insights goes to Genesis Molecular AI and the original authors. 
 
 ## 🚀 Project Goal: Wrap, Don't Rewrite
 The primary goal of this project is to build a single-GPU trainable model by faithfully implementing the PairMixer backbone. To achieve this while keeping the codebase lean, UMA-Fold completely outsources the heavy lifting of chemical validation, multi-sequence alignment (MSA) parsing, and coordinate handling.
@@ -16,7 +16,13 @@ By reproducing this, this project aims to leverage:
 * **Single-GPU trainability** from scratch for smaller scale variants (specifically targeting 24GB consumer GPUs like the RTX 4090/A5500).
 * **Faster inference and reduced training compute**, exploring the paper's findings of significant compute reduction and faster inference speeds.
 
-## 📦 Setup & Installation
+## � PEARL Insights Integrated
+To further optimize this project for local hardware, UMA-Fold explicitly borrows from Genesis Molecular AI's **PEARL** foundation model technical report:
+* **SO(3)-Equivariant Diffusion Head:** Routes the sequence-free PairMixer representations directly into an SO(3) equivariant transformer to inherently respect 3D rotational symmetries without bloating parameters.
+* **Curriculum Training:** Utilizes progressive spatial cropping via PyTorch Lightning to efficiently train on local physics and geometry extremely cheaply before scaling to full multi-chain resolutions.
+* **Conservative Mixed-Precision:** Heavy triangle metrics execute natively in VRAM-saving `bf16`, but unstable losses and projection matrices are safeguarded in precise `fp32`.
+
+## �📦 Setup & Installation
 Please review the top of `requirements.txt` for step-by-step instructions on setting up your Conda environment, cloning dependencies, and installing the required packages.
 
 ## 🛠️ Data Downloading
