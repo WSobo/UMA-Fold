@@ -1,124 +1,86 @@
-#!/usr/bin/env python
 """
 scripts/train.py
 ────────────────
-Entry point for training UMA-Fold.
-
-Usage
-─────
-    # Default config
-    python scripts/train.py
-
-    # Override individual settings via Hydra CLI
-    python scripts/train.py model.pair_dim=256 trainer.max_epochs=50
-
-    # W&B disabled
-    python scripts/train.py wandb.enabled=false
-
-    # CPU smoke-test (no GPU required)
-    python scripts/train.py trainer.accelerator=cpu trainer.devices=1
+Top-level PyTorch Lightning training script for UMA-Fold.
+Uses Hydra for configuration management and Weights & Biases for experiment tracking.
+Optimized for single-node (specifically single A5500/RTX 4090) execution.
 """
 
-import logging
-import sys
-from pathlib import Path
-
-import hydra
+import os
+import torch
 import pytorch_lightning as pl
-import wandb
-from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.callbacks import (
-    EarlyStopping,
-    LearningRateMonitor,
-    ModelCheckpoint,
-)
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
-# Allow `python scripts/train.py` without installing the package
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Adjust paths organically so we don't trip over module imports from root
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.datamodule import ProteinDataModule
+from src.data.datamodule import create_uma_fold_datamodule
 from src.training.lightning_module import UMAFoldLightningModule
-
-log = logging.getLogger(__name__)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
-def main(cfg: DictConfig) -> None:
-    log.info("Configuration:\n%s", OmegaConf.to_yaml(cfg))
+def main(cfg: DictConfig):
+    # 1. Setup environments and reproducability
+    pl.seed_everything(cfg.get("seed", 42), workers=True)
+    
+    # Enable TF32 for Ampere/Ada architectures as standard
+    torch.set_float32_matmul_precision('high')
 
-    pl.seed_everything(42, workers=True)
+    # 2. Instantiate DataModule (Wraps Boltz-1 pipeline)
+    print("Initializing DataModule...")
+    data_module = create_uma_fold_datamodule(OmegaConf.to_container(cfg.data, resolve=True))
+    
+    # 3. Instantiate Lightning Model (Our UMAFold Wrapper)
+    print("Initializing UMA-Fold Model...")
+    model = UMAFoldLightningModule(
+        model_config=OmegaConf.to_container(cfg.model, resolve=True),
+        lr=cfg.training.lr,
+        compile_model=cfg.training.compile_model
+    )
 
-    # ── Logger (W&B) ─────────────────────────────────────────────────────────
-    logger = None
-    if cfg.wandb.enabled:
-        logger = WandbLogger(
-            project=cfg.wandb.project,
-            name=cfg.wandb.name,
-            entity=cfg.wandb.entity or None,
-            tags=list(cfg.wandb.tags),
-            notes=cfg.wandb.notes,
-            log_model=True,
-        )
-
-    # ── Callbacks ────────────────────────────────────────────────────────────
+    # 4. Setup Logger (W&B)
+    logger = WandbLogger(
+        project=cfg.get("project_name", "UMA-Fold"),
+        name=cfg.get("run_name", "pairmixer-run"),
+        log_model=False, # We handle model saving via ModelCheckpoint to save disk space
+        save_dir="logs/"
+    )
+    
+    # 5. Setup Callbacks
     callbacks = [
-        LearningRateMonitor(logging_interval="epoch"),
+        ModelCheckpoint(
+            dirpath="checkpoints/",
+            filename="uma-fold-{epoch:02d}-{val_loss:.4f}",
+            monitor="val_loss",
+            mode="min",
+            save_top_k=3,
+            save_last=True
+        ),
+        LearningRateMonitor(logging_interval="step")
     ]
 
-    if cfg.trainer.enable_checkpointing:
-        callbacks.append(
-            ModelCheckpoint(
-                dirpath=cfg.paths.checkpoint_dir,
-                filename="uma_fold-{epoch:03d}-{val_loss:.4f}",
-                monitor=cfg.trainer.checkpoint_monitor,
-                mode=cfg.trainer.checkpoint_mode,
-                save_top_k=cfg.trainer.checkpoint_save_top_k,
-                save_last=True,
-            )
-        )
-
-    if cfg.trainer.early_stopping.enabled:
-        callbacks.append(
-            EarlyStopping(
-                monitor=cfg.trainer.early_stopping.monitor,
-                patience=cfg.trainer.early_stopping.patience,
-                mode=cfg.trainer.early_stopping.mode,
-            )
-        )
-
-    # ── Trainer ───────────────────────────────────────────────────────────────
+    # 6. Initialize Trainer
+    print(f"Setting up Trainer with precision={cfg.training.precision}...")
     trainer = pl.Trainer(
-        max_epochs=cfg.trainer.max_epochs,
-        accelerator=cfg.trainer.accelerator,
-        devices=cfg.trainer.devices,
-        precision=cfg.trainer.precision,
-        gradient_clip_val=cfg.trainer.gradient_clip_val,
-        accumulate_grad_batches=cfg.trainer.accumulate_grad_batches,
-        log_every_n_steps=cfg.trainer.log_every_n_steps,
+        max_epochs=cfg.training.epochs,
+        accelerator="gpu",
+        devices=cfg.training.devices,
+        precision=cfg.training.precision, # 'bf16-mixed' is huge for memory savings and speed
         logger=logger,
         callbacks=callbacks,
-        enable_checkpointing=cfg.trainer.enable_checkpointing,
+        log_every_n_steps=cfg.training.log_every_n_steps,
+        accumulate_grad_batches=cfg.training.accumulate_grad_batches,
+        # Defaulting strategy to 'auto' cleanly assigns Single-Device setups
+        strategy="auto" 
     )
 
-    # ── Model & Data ─────────────────────────────────────────────────────────
-    model = UMAFoldLightningModule(cfg)
-    datamodule = ProteinDataModule(
-        data_dir=cfg.paths.data_dir,
-        train_split=cfg.data.train_split,
-        val_split=cfg.data.val_split,
-        test_split=cfg.data.test_split,
-        batch_size=cfg.data.batch_size,
-        num_workers=cfg.data.num_workers,
-        pin_memory=cfg.data.pin_memory,
-        max_seq_len=cfg.data.max_seq_len,
-    )
-
-    # ── Fit ───────────────────────────────────────────────────────────────────
-    trainer.fit(model, datamodule=datamodule)
-
-    if cfg.wandb.enabled:
-        wandb.finish()
+    # 7. Train!
+    print("Beginning Training...")
+    trainer.fit(model, datamodule=data_module)
 
 
 if __name__ == "__main__":

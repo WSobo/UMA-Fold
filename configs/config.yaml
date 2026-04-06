@@ -1,34 +1,61 @@
-# UMA-Fold root Hydra configuration
-# Run with: python scripts/train.py (Hydra auto-discovers this file)
+# UMA-Fold Base Configuration
+# ───────────────────────────
+# Built for Hydra Configuration Management
 
-defaults:
-  - model: pairmixer          # configs/model/pairmixer.yaml
-  - data: default             # configs/data/default.yaml
-  - trainer: default          # configs/trainer/default.yaml
-  - _self_                    # allow overrides from CLI
+project_name: "UMA-Fold"
+run_name: "pairmixer-small-A5500"
+seed: 42
 
-# ── Experiment identity ──────────────────────────────────────────────────────
-project_name: uma_fold
-run_name: baseline
+# --- Training Hyperparameters ---
+training:
+  lr: 0.001
+  epochs: 100
+  devices: 1
+  # bfloat16-mixed heavily minimizes VRAM allowing massive lengths
+  precision: "bf16-mixed" 
+  log_every_n_steps: 10
+  accumulate_grad_batches: 4
+  # Leverages PyTorch 2.x max throughput (ensure torch.compile works on your system)
+  compile_model: True
 
-# ── Weights & Biases ─────────────────────────────────────────────────────────
-wandb:
-  enabled: true
-  entity: null          # set to your W&B username / team
-  project: ${project_name}
-  name: ${run_name}
-  tags: []
-  notes: ""
+# --- UMA-Fold / PairMixer Model Setup ---
+model:
+  # Matches Boltz-1 small model parameter footprints
+  token_s: 384
+  token_z: 128
+  atom_s: 128
+  atom_z: 32
+  
+  pairmixer_args:
+    num_blocks: 12
+    c_hidden_mul: 128
+    drop_rate: 0.1
+    gradient_checkpointing: True
+  
+  embedder_args: {}
+  msa_args: 
+    msa_blocks: 4
+    msa_dropout: 0.15
+    z_dropout: 0.15
+  
+  diffusion_args:
+    accumulate_token_repr: True
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-paths:
-  data_dir: data/
-  output_dir: outputs/
-  checkpoint_dir: checkpoints/
-
-# ── Mixed precision ───────────────────────────────────────────────────────────
-# trunk (triangle ops, FFN) → bfloat16
-# sensitive ops (softmax, loss) → float32
-precision:
-  trunk_dtype: bfloat16
-  sensitive_dtype: float32
+# --- DataModule Setup (Piped straight to Boltz) ---
+data:
+  datasets: [] # To be filled with Boltz DatasetConfigs pointing to data/raw/
+  filters: []
+  featurizer: {} # Empty dict to let hydra parse it to config, must be replaced with proper instances in code, or omitted for defaults if possible. Let's keep it simple for now. Note: the underlying Boltz code might need manual instantiation in `datamodule.py` for complex objects like `Tokenizer`, `BoltzFeaturizer`. We'll leave this as a blueprint.
+  max_atoms: 4608
+  max_tokens: 512
+  max_seqs: 4096
+  samples_per_epoch: 1000
+  batch_size: 1
+  num_workers: 4
+  random_seed: 42
+  pin_memory: True
+  symmetries: "data/raw/symmetry.pkl"
+  atoms_per_window_queries: 32
+  min_dist: 2.0
+  max_dist: 22.0
+  num_bins: 64
