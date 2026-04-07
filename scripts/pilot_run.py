@@ -30,7 +30,9 @@ def main(cfg: DictConfig):
 
     # Initialize components
     print("Loading DataModule...")
-    data_module = create_uma_fold_datamodule(OmegaConf.to_container(cfg.data, resolve=True))
+    # Instantiate the data configuration using Hydra to properly resolve Boltz DatasetConfig objects
+    instantiated_data_cfg = hydra.utils.instantiate(cfg.data)
+    data_module = create_uma_fold_datamodule(instantiated_data_cfg)
     
     print("Loading UMA-Fold Model...")
     model = UMAFoldLightningModule(

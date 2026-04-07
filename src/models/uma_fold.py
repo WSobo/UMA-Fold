@@ -19,6 +19,37 @@ from boltz.model.modules.trunk import InputEmbedder, MSAModule
 from boltz.model.modules.diffusion import AtomDiffusion
 from boltz.model.modules.encoders import RelativePositionEncoder
 
+
+# =========================================================================
+# PEARL INSIGHT: SO(3) vs SE(3) Architecture 
+# =========================================================================
+# Boltz-1's diffusion process naturally behaves as an SE(3) model because it 
+# actively augments coordinates with random spatial translations (s_trans=1.0).
+# The PEARL architecture identifies this as a massive computational burden. 
+# By simply mean-centering the coordinates and mathematically eliminating 
+# translation from the equation, we force the network to operate as an SO(3) 
+# architecture, achieving identical physical validity with drastically lower
+# parameter/VRAM overhead. 
+import boltz.model.modules.diffusion as boltz_diffusion
+
+# 1. Store original Boltz augmentation functions
+_orig_compute_random_augmentation = boltz_diffusion.compute_random_augmentation
+_orig_center_random_augmentation = boltz_diffusion.center_random_augmentation
+
+# 2. Patch them to zero-out translations (s_trans=0.0) globally
+def _so3_compute_random_augmentation(*args, **kwargs):
+    kwargs["s_trans"] = 0.0 # Force Translation to ZERO
+    return _orig_compute_random_augmentation(*args, **kwargs)
+
+def _so3_center_random_augmentation(*args, **kwargs):
+    kwargs["s_trans"] = 0.0 # Force Translation to ZERO
+    return _orig_center_random_augmentation(*args, **kwargs)
+
+boltz_diffusion.compute_random_augmentation = _so3_compute_random_augmentation
+boltz_diffusion.center_random_augmentation = _so3_center_random_augmentation
+# =========================================================================
+
+
 class PairMixerBackbone(nn.Module):
     """
     The hyper-lightweight PairMixer backbone.

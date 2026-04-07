@@ -14,7 +14,7 @@ import pytorch_lightning as pl
 # Import directly from the boltz repository
 from boltz.data.module.training import BoltzTrainingDataModule, DataConfig
 
-def create_uma_fold_datamodule(config: Dict) -> pl.LightningDataModule:
+def create_uma_fold_datamodule(config) -> pl.LightningDataModule:
     """
     Creates and returns the BoltzTrainingDataModule using a configuration
     dictionary that matches Boltz's DataConfig expectations.
@@ -22,6 +22,12 @@ def create_uma_fold_datamodule(config: Dict) -> pl.LightningDataModule:
     This allows us to seamlessly pass the RCSB targets and MSAs straight 
     into our custom Pairmixer backbone.
     """
-    # Transform simple dict to full DataConfig dataclass
+    # Transform instantiated hydra dictionary mapping into the DataConfig dataclass
+    if hasattr(config, "_items"): # If it's still a DictConfig somehow
+        # convert it into a naive python dict to unpack safely into the DataConfig
+        config = dict(config)
+    elif not isinstance(config, dict):
+        config = dict(config)
+        
     cfg = DataConfig(**config)
     return BoltzTrainingDataModule(cfg)

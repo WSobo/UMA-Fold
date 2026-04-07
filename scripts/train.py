@@ -32,7 +32,9 @@ def main(cfg: DictConfig):
 
     # 2. Instantiate DataModule (Wraps Boltz-1 pipeline)
     print("Initializing DataModule...")
-    data_module = create_uma_fold_datamodule(OmegaConf.to_container(cfg.data, resolve=True))
+    # Use hydra instantiate so Boltz dataset objects are fully created from YAML definitions
+    instantiated_data_cfg = hydra.utils.instantiate(cfg.data)
+    data_module = create_uma_fold_datamodule(instantiated_data_cfg)
     
     # 3. Instantiate Lightning Model (Our UMAFold Wrapper)
     print("Initializing UMA-Fold Model...")
