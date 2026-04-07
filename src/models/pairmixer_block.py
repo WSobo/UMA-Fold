@@ -68,7 +68,8 @@ class PairMixerBlock(nn.Module):
 
         # PEARL INSIGHT: Highly accelerated CUDA kernels for triangle multiplications.
         # Ensure our ops hit the cuequivariance accelerated path for max throughput.
-        use_kernels = True 
+        # Simple Fix: The environment's cuequivariance dependency might be broken, so disable kernels.
+        use_kernels = False
 
         # --- 1. Triangle Multiplication (Incoming) ---
         z = z + self.tri_mul_in(z, mask=mask, use_kernels=use_kernels)

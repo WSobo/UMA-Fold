@@ -37,6 +37,9 @@ model:
     msa_blocks: 4
     msa_dropout: 0.15
     z_dropout: 0.15
+    activation_checkpointing: True
+    subsample_msa: True
+    num_subsampled_msa: 128
   
   diffusion_args:
     accumulate_token_repr: True

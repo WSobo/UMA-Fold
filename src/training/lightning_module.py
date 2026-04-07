@@ -49,7 +49,7 @@ class UMAFoldLightningModule(pl.LightningModule):
         # loss = self.compute_loss(outputs, batch)
         
         # Dummy loss for pipeline completeness
-        loss = outputs["z_out"].sum() * 0.0 + torch.tensor(1.0, requires_grad=True, device=self.device)
+        loss = outputs["z_trunk"].sum() * 0.0 + torch.tensor(1.0, requires_grad=True, device=self.device)
         
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
@@ -57,7 +57,7 @@ class UMAFoldLightningModule(pl.LightningModule):
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         outputs = self(batch)
         # val_loss = self.compute_loss(outputs, batch)
-        val_loss = outputs["z_out"].sum() * 0.0
+        val_loss = outputs["z_trunk"].sum() * 0.0
         self.log("val_loss", val_loss, sync_dist=True)
 
     def configure_optimizers(self) -> Dict[str, Any]:
