@@ -56,8 +56,8 @@ def main(cfg: DictConfig):
     callbacks = [
         ModelCheckpoint(
             dirpath="checkpoints/",
-            filename="uma-fold-{epoch:02d}-{val_loss:.4f}",
-            monitor="val_loss",
+            filename="uma-fold-{epoch:02d}-{train_loss:.4f}",
+            monitor="train_loss",
             mode="min",
             save_top_k=3,
             save_last=True

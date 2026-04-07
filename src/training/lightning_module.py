@@ -45,19 +45,23 @@ class UMAFoldLightningModule(pl.LightningModule):
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         outputs = self(batch)
         
-        # Placeholder for Boltz distillation / structure loss
-        # loss = self.compute_loss(outputs, batch)
-        
-        # Dummy loss for pipeline completeness
-        loss = outputs["z_trunk"].sum() * 0.0 + torch.tensor(1.0, requires_grad=True, device=self.device)
+        # Calculate structure loss safely through the compiled model boundary
+        loss_dict = self.model.compute_loss(
+            feats=batch,
+            out_dict=outputs
+        )
+        loss = loss_dict["loss"]
         
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
         
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         outputs = self(batch)
-        # val_loss = self.compute_loss(outputs, batch)
-        val_loss = outputs["z_trunk"].sum() * 0.0
+        loss_dict = self.model.compute_loss(
+            feats=batch,
+            out_dict=outputs
+        )
+        val_loss = loss_dict["loss"]
         self.log("val_loss", val_loss, sync_dist=True)
 
     def configure_optimizers(self) -> Dict[str, Any]:

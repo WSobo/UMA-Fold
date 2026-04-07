@@ -253,3 +253,10 @@ class UMAFold(nn.Module):
             
         return dict_out
 
+    def compute_loss(self, feats: dict, out_dict: dict) -> dict:
+        """
+        Wrapped loss delegation to atom diffusion, preventing edge-cases where 
+        torch.compile wraps the model and breaks deep module property access.
+        """
+        return self.structure_module.compute_loss(feats, out_dict)
+
