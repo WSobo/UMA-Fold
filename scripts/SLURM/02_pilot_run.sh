@@ -19,5 +19,13 @@ cd /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold
 
 python -c "import torch; torch.set_float32_matmul_precision('high');"
 
-echo "Running 1-Batch Sanity Check (Pilot Run)..."
-python scripts/pilot_run.py
+echo "Running 1-Batch Sanity Check (Pilot Run) at max_neighborhood=15..."
+python scripts/pilot_run.py ++data.datasets.0.cropper.max_neighborhood=15
+
+echo "Running 1-Batch Sanity Check (Pilot Run) at max_neighborhood=30..."
+python scripts/pilot_run.py ++data.datasets.0.cropper.max_neighborhood=30
+
+echo "Running 1-Batch Sanity Check (Pilot Run) at max_neighborhood=40..."
+python scripts/pilot_run.py ++data.datasets.0.cropper.max_neighborhood=40
+
+echo "All Pilot runs completed successfully. Pipeline is confirmed for all curriculum stages!"

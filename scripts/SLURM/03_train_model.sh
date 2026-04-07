@@ -17,6 +17,13 @@ micromamba activate uma-fold
 
 cd /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold
 
+# WANDB Setup: Provide your W&B API key to sync metrics to the cloud
+# (You can find it at https://wandb.ai/authorize)
+#export WANDB_API_KEY=""
+# Do not leak your API key in public repos or shared scripts! Consider using environment variables or .netrc for secure storage.
+# OR uncomment the following line to run strictly offline (no account needed):
+export WANDB_MODE="offline"
+
 python -c "import torch; torch.set_float32_matmul_precision('high');"
 
 echo "Starting Full UMA-Fold Training Campaign (Curriculum Pipeline)..."

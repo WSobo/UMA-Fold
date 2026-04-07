@@ -33,9 +33,9 @@ class UMAFoldLightningModule(pl.LightningModule):
         # 2. PyTorch 2.x Graph Compilation
         if compile_model:
             try:
-                # reduce-overhead mode minimizes CPU overhead and fuses kernels. 
-                # This drops VRAM usage and speeds up training.
-                self.model = torch.compile(self.model, mode="reduce-overhead")
+                # default mode is safer for dynamic shapes like varied protein lengths
+                # dynamic=True is required to avoid Inductor stride/shape assertion failures on backward pass
+                self.model = torch.compile(self.model, dynamic=True)
             except Exception as e:
                 print(f"Warning: torch.compile failed. Proceeding eager mode. {e}")
 
