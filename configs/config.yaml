@@ -16,7 +16,7 @@ training:
   log_every_n_steps: 10
   accumulate_grad_batches: 4
   # Leverages PyTorch 2.x max throughput (ensure torch.compile works on your system)
-  compile_model: True
+  compile_model: False
 
 # --- UMA-Fold / PairMixer Model Setup ---
 model:
