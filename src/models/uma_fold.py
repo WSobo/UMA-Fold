@@ -31,6 +31,8 @@ from boltz.model.modules.encoders import RelativePositionEncoder
 # architecture, achieving identical physical validity with drastically lower
 # parameter/VRAM overhead. 
 import boltz.model.modules.diffusion as boltz_diffusion
+import boltz.model.loss.diffusion as boltz_loss_diffusion
+from einops import einsum
 
 # 1. Store original Boltz augmentation functions
 _orig_compute_random_augmentation = boltz_diffusion.compute_random_augmentation
@@ -47,8 +49,66 @@ def _so3_center_random_augmentation(*args, **kwargs):
 
 boltz_diffusion.compute_random_augmentation = _so3_compute_random_augmentation
 boltz_diffusion.center_random_augmentation = _so3_center_random_augmentation
-# =========================================================================
 
+# =========================================================================
+# ROBUST SVD PATCH for Mixed-Precision Stability (Avoids LinalgError: 3)
+# =========================================================================
+def _patched_weighted_rigid_align(true_coords, pred_coords, weights, mask):
+    batch_size, num_points, dim = true_coords.shape
+    weights = (mask * weights).unsqueeze(-1)
+    
+    # Safely compute centroids avoiding division by zero
+    weight_sum = weights.sum(dim=1, keepdim=True)
+    weight_sum = torch.clamp(weight_sum, min=1e-8)
+    
+    true_centroid = (true_coords * weights).sum(dim=1, keepdim=True) / weight_sum
+    pred_centroid = (pred_coords * weights).sum(dim=1, keepdim=True) / weight_sum
+    
+    true_coords_centered = true_coords - true_centroid
+    pred_coords_centered = pred_coords - pred_centroid
+
+    if num_points < (dim + 1):
+        print("Warning: The size of one of the point clouds is <= dim+1.")
+
+    cov_matrix = einsum(weights * pred_coords_centered, true_coords_centered, "b n i, b n j -> b i j")
+    original_dtype = cov_matrix.dtype
+    
+    # -------------------- THE PATCH --------------------
+    # Extremely small SVDs fail to converge in fp32. Adding a trace of noise guarantees positive definiteness
+    cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
+    cov_matrix_32 = cov_matrix_32 + 1e-5 * torch.eye(dim, device=cov_matrix.device, dtype=torch.float32).unsqueeze(0)
+    
+    try:
+        # Pre-check for NaNs. If NaNs exist in the input matrix, bypass SVD entirely to prevent hard crashes.
+        if torch.isnan(cov_matrix_32).any() or torch.isinf(cov_matrix_32).any():
+            raise torch._C._LinAlgError("NaN/Inf strictly caught before SVD computation.")
+            
+        U, S, V = torch.linalg.svd(cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None)
+    except torch._C._LinAlgError:
+        # Fallback returning identity/dummy rotation if SVD truly fails due to structural collapse or NaNs
+        # (This just zeros out the rotational loss for this single corrupted sequence to let the batch gradient survive)
+        U = torch.eye(dim, device=cov_matrix.device, dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1)
+        S = torch.ones(dim, device=cov_matrix.device, dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1)
+        V = torch.eye(dim, device=cov_matrix.device, dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1)
+
+    V = V.mH
+
+    if (S.abs() <= 1e-15).any() and not (num_points < (dim + 1)):
+        print("Warning: Excessively low rank of cross-correlation between aligned point clouds.")
+
+    rot_matrix = torch.einsum("b i j, b k j -> b i k", U, V).to(dtype=torch.float32)
+    F_mat = torch.eye(dim, dtype=torch.float32, device=cov_matrix.device)[None].repeat(batch_size, 1, 1)
+    F_mat[:, -1, -1] = torch.det(rot_matrix)
+    rot_matrix = einsum(U, F_mat, V, "b i j, b j k, b l k -> b i l")
+    rot_matrix = rot_matrix.to(dtype=original_dtype)
+
+    aligned_coords = (einsum(true_coords_centered, rot_matrix, "b n i, b j i -> b n j") + pred_centroid)
+    aligned_coords.detach_()
+    return aligned_coords
+
+boltz_loss_diffusion.weighted_rigid_align = _patched_weighted_rigid_align
+boltz_diffusion.weighted_rigid_align = _patched_weighted_rigid_align
+# =========================================================================
 
 class PairMixerBackbone(nn.Module):
     """

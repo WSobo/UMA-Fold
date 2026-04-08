@@ -68,13 +68,12 @@ class UMAFoldLightningModule(pl.LightningModule):
         """
         Fused optimizer implementation avoiding memory bandwidth bottlenecks.
         """
-        # Using fused=True performs parameter updates directly on the GPU without 
-        # jumping back/forth to CPU, reducing step time massively.
+        # fused=False is required when using gradient clipping alongside PyTorch Lightning AMP
         optimizer = AdamW(
             self.model.parameters(), 
             lr=self.hparams.lr, 
             weight_decay=0.01, 
-            fused=True 
+            fused=False 
         )
         
         # Standard cosine annealing schedule matching modern LLM and Protein setup heuristics

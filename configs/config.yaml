@@ -8,7 +8,8 @@ seed: 42
 
 # --- Training Hyperparameters ---
 training:
-  lr: 0.001
+  lr: 0.0001
+  gradient_clip_val: 1.0
   epochs: 100
   devices: 1
   # bfloat16-mixed heavily minimizes VRAM allowing massive lengths

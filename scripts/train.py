@@ -74,6 +74,7 @@ def main(cfg: DictConfig):
         precision=cfg.training.precision, # 'bf16-mixed' is huge for memory savings and speed
         logger=logger,
         callbacks=callbacks,
+        gradient_clip_val=cfg.training.get("gradient_clip_val", 1.0),
         log_every_n_steps=cfg.training.log_every_n_steps,
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
         # Defaulting strategy to 'auto' cleanly assigns Single-Device setups
