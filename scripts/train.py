@@ -11,6 +11,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.strategies import DDPStrategy
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
@@ -66,19 +67,27 @@ def main(cfg: DictConfig):
     ]
 
     # 6. Initialize Trainer
-    print(f"Setting up Trainer with precision={cfg.training.precision}...")
+    devices = cfg.training.devices
+    # DDP for multi-GPU; "auto" for single GPU (avoids unnecessary process spawning).
+    # find_unused_parameters=False: safe here because all params are touched every
+    # forward pass. Avoids the overhead of DDP's unused-param detection bucket.
+    if devices > 1:
+        strategy = DDPStrategy(find_unused_parameters=False)
+    else:
+        strategy = "auto"
+
+    print(f"Setting up Trainer: precision={cfg.training.precision}, devices={devices}, strategy={strategy}...")
     trainer = pl.Trainer(
         max_epochs=cfg.training.epochs,
         accelerator="gpu",
-        devices=cfg.training.devices,
-        precision=cfg.training.precision, # 'bf16-mixed' is huge for memory savings and speed
+        devices=devices,
+        strategy=strategy,
+        precision=cfg.training.precision,
         logger=logger,
         callbacks=callbacks,
         gradient_clip_val=cfg.training.get("gradient_clip_val", 1.0),
         log_every_n_steps=cfg.training.log_every_n_steps,
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
-        # Defaulting strategy to 'auto' cleanly assigns Single-Device setups
-        strategy="auto" 
     )
 
     # 7. Train!

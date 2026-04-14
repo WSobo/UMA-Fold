@@ -12,19 +12,104 @@ It relies purely on Triangle Multiplication for spatial reasoning.
 import torch
 from torch import nn, Tensor
 
-# We can leverage Boltz's well-tested low-level primitives instead of writing 
-# our own Einsum-heavy triangle multiplications.
-from boltz.model.layers.triangular_mult import (
-    TriangleMultiplicationIncoming,
-    TriangleMultiplicationOutgoing,
-)
-from boltz.model.layers.transition import Transition
+from src.models.layers import Transition
+
+class CustomTriangleMultiplicationOutgoing(nn.Module):
+    """
+    Explicit cuBLAS Matmul implementation of Outgoing Triangle Multiplication.
+    Computes: z_ij = sum_k (z_ik * z_jk) via batched torch.matmul instead of einsum.
+    """
+    def __init__(self, dim: int, c_hidden_mul: int = 128):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.norm_out = nn.LayerNorm(c_hidden_mul)
+        self.linear_a = nn.Linear(dim, c_hidden_mul)
+        self.linear_b = nn.Linear(dim, c_hidden_mul)
+        self.gate_a = nn.Linear(dim, c_hidden_mul)
+        self.gate_b = nn.Linear(dim, c_hidden_mul)
+        self.linear_out = nn.Linear(c_hidden_mul, dim)
+        self.gate_out = nn.Linear(dim, dim)
+
+    def forward(self, z: Tensor, mask: Tensor | None = None) -> Tensor:
+        z_norm = self.norm(z)
+        
+        # 1. Project z to get left and right update tensors
+        left_proj = self.linear_a(z_norm) * torch.sigmoid(self.gate_a(z_norm))  # [B, L, L, C]
+        right_proj = self.linear_b(z_norm) * torch.sigmoid(self.gate_b(z_norm)) # [B, L, L, C]
+        
+        if mask is not None:
+            mask_expanded = mask.unsqueeze(-1)
+            left_proj = left_proj * mask_expanded
+            right_proj = right_proj * mask_expanded
+
+        # 3. Explicit Matmul (Outgoing: bikc, bjkc -> bijc)
+        left_permuted = left_proj.permute(0, 3, 1, 2)  # [B, C, L(i), L(k)]
+        right_permuted = right_proj.permute(0, 3, 2, 1) # [B, C, L(k), L(j)]
+        
+        # 4. Direct cuBLAS Matmul — upcast to float32 to prevent bf16 overflow
+        # at larger sequence lengths (crop30/40), the summation over L terms overflows bf16
+        z_out = (left_permuted.float() @ right_permuted.float()).to(left_permuted.dtype) # [B, C, L(i), L(j)]
+
+        # 5. Permute back, make contiguous, and apply LayerNorm to stabilize summation variance
+        z_out = z_out.permute(0, 2, 3, 1).contiguous() # [B, L, L, C]
+        z_out = self.norm_out(z_out)
+
+        z_update = self.linear_out(z_out) * torch.sigmoid(self.gate_out(z_norm))
+
+        return z_update
+
+class CustomTriangleMultiplicationIncoming(nn.Module):
+    """
+    Explicit cuBLAS Matmul implementation of Incoming Triangle Multiplication.
+    Computes: z_ij = sum_k (z_ki * z_kj) via batched torch.matmul instead of einsum.
+    """
+    def __init__(self, dim: int, c_hidden_mul: int = 128):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.norm_out = nn.LayerNorm(c_hidden_mul)
+        self.linear_a = nn.Linear(dim, c_hidden_mul)
+        self.linear_b = nn.Linear(dim, c_hidden_mul)
+        self.gate_a = nn.Linear(dim, c_hidden_mul)
+        self.gate_b = nn.Linear(dim, c_hidden_mul)
+        self.linear_out = nn.Linear(c_hidden_mul, dim)
+        self.gate_out = nn.Linear(dim, dim)
+
+    def forward(self, z: Tensor, mask: Tensor | None = None) -> Tensor:
+        z_norm = self.norm(z)
+        
+        # 1. Project z
+        left_proj = self.linear_a(z_norm) * torch.sigmoid(self.gate_a(z_norm))  # [B, L, L, C]
+        right_proj = self.linear_b(z_norm) * torch.sigmoid(self.gate_b(z_norm)) # [B, L, L, C]
+        
+        if mask is not None:
+            mask_expanded = mask.unsqueeze(-1)
+            left_proj = left_proj * mask_expanded
+            right_proj = right_proj * mask_expanded
+
+        # 3. Explicit Matmul (Incoming: bkic, bkjc -> bijc)
+        # We need sum over k. 
+        # Left: bkic -> want shape [B, C, L(i), L(k)] => dim 2 is i, dim 1 is k
+        left_permuted = left_proj.permute(0, 3, 2, 1)  
+        # Right: bkjc -> want shape [B, C, L(k), L(j)] => dim 1 is k, dim 2 is j
+        right_permuted = right_proj.permute(0, 3, 1, 2)
+        
+        # 4. Direct cuBLAS Matmul — upcast to float32 to prevent bf16 overflow
+        # at larger sequence lengths (crop30/40), the summation over L terms overflows bf16
+        z_out = (left_permuted.float() @ right_permuted.float()).to(left_permuted.dtype) # [B, C, L(i), L(j)]
+
+        # 5. Permute back, make contiguous, and apply LayerNorm to stabilize summation variance
+        z_out = z_out.permute(0, 2, 3, 1).contiguous() # [B, L, L, C]
+        z_out = self.norm_out(z_out)
+
+        z_update = self.linear_out(z_out) * torch.sigmoid(self.gate_out(z_norm))
+
+        return z_update
 
 
 class PairMixerBlock(nn.Module):
     """
     A single layer of the PairMixer backbone.
-    Updates only the pair representation (z) using Triangle Multiplication.
+    Updates only the pair representation (z) using explicit Matmul Triangle Multiplication.
     The sequence representation (s) passes through untouched.
     """
     
@@ -37,18 +122,16 @@ class PairMixerBlock(nn.Module):
         """
         super().__init__()
         
-        # 1. Triangle Multiplication (Incoming Edges)
-        self.tri_mul_in = TriangleMultiplicationIncoming(dim=c_z)
+        # 1. Custom Triangle Multiplication (Incoming Edges)
+        self.tri_mul_in = CustomTriangleMultiplicationIncoming(dim=c_z, c_hidden_mul=c_hidden_mul)
         
-        # 2. Triangle Multiplication (Outgoing Edges)
-        self.tri_mul_out = TriangleMultiplicationOutgoing(dim=c_z)
+        # 2. Custom Triangle Multiplication (Outgoing Edges)
+        self.tri_mul_out = CustomTriangleMultiplicationOutgoing(dim=c_z, c_hidden_mul=c_hidden_mul)
         
         # 3. Pair Transition (Feed-Forward Network applied across all pairs)
-        # Note: Boltz uses a Transition module which acts as a standard FFN layer with LayerNorm
         self.transition = Transition(
             dim=c_z, 
             hidden=c_z * 4
-            # drop_rate=drop_rate not supported natively here so we handle separately or ignore
         )
 
     def forward(self, z: Tensor, mask: Tensor | None = None) -> Tensor:
@@ -62,20 +145,18 @@ class PairMixerBlock(nn.Module):
         Returns:
             z_out: Updated pair representation of shape [B, L, L, C_z]
         """
-        # Ensure mask is a tensor to satisfy the Boltz interface
+        # Ensure mask is a tensor to satisfy the interface
         if mask is None:
             mask = torch.ones(z.shape[:3], device=z.device, dtype=z.dtype)
 
-        # PEARL INSIGHT: Highly accelerated CUDA kernels for triangle multiplications.
-        # Ensure our ops hit the cuequivariance accelerated path for max throughput.
-        # Simple Fix: The environment's cuequivariance dependency might be broken, so disable kernels.
-        use_kernels = False
+        # PEARL INSIGHT: Highly accelerated CUDA kernels for triangle multiplications
+        # using explicit torch.matmul to bypass einsum VRAM spikes.
 
         # --- 1. Triangle Multiplication (Incoming) ---
-        z = z + self.tri_mul_in(z, mask=mask, use_kernels=use_kernels)
+        z = z + self.tri_mul_in(z, mask=mask)
         
         # --- 2. Triangle Multiplication (Outgoing) ---
-        z = z + self.tri_mul_out(z, mask=mask, use_kernels=use_kernels)
+        z = z + self.tri_mul_out(z, mask=mask)
         
         # --- 3. Pair Transition (FFN) ---
         z = z + self.transition(z)

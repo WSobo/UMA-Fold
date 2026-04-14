@@ -1,30 +1,15 @@
 # ==============================================================================
-# UMA-Fold Installation & Setup Guide
+# UMA-Fold Dependencies
 # ==============================================================================
-
-# 1. Create and activate a fresh Conda environment
-# conda create -n uma-fold python=3.11 -y
-# conda activate uma-fold
-
-# 2. Clone the UMA-Fold repository
-# git clone https://github.com/WSobo/UMA-Fold.git
-# cd UMA-Fold
-
-# 3. Clone the Boltz repository
-#    (We rely on Boltz for the data loading and processing ecosystem)
-# git clone https://github.com/jwohlwend/boltz.git
-
-# 4. The Unified PyTorch & Boltz Installation
-#    (CRITICAL: These must be installed in a single command using the cu124 wheel. 
-#    Splitting them allows pip to incorrectly upgrade to CUDA 13, while using cu121 
-#    causes strict cuBLAS dependency conflicts with cuequivariance.)
-# pip install "torch==2.6.0+cu124" "torchvision==0.21.0+cu124" -e "./boltz" --extra-index-url https://download.pytorch.org/whl/cu124
-
-# 5. Install the remaining UMA-Fold requirements
-# pip install -r requirements.txt
-
-# ==============================================================================
-# Python Packages
+# The canonical dependency source is pyproject.toml, managed by uv.
+# Install everything with:
+#
+#   uv sync --extra dev
+#
+# That's it — no conda, no manual boltz clone, no separate pip steps.
+# uv handles PyTorch (CUDA 12.4 wheels) and Boltz (PyPI) automatically.
+#
+# This file is kept for reference / pip fallback only.
 # ==============================================================================
 
 # PyTorch Lightning – training loop abstraction

@@ -44,14 +44,19 @@ class UMAFoldLightningModule(pl.LightningModule):
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         outputs = self(batch)
-        
+
         # Calculate structure loss safely through the compiled model boundary
         loss_dict = self.model.compute_loss(
             feats=batch,
             out_dict=outputs
         )
         loss = loss_dict["loss"]
-        
+
+        # Guard: skip batch if loss is NaN/Inf so training doesn't silently degenerate
+        if not torch.isfinite(loss):
+            print(f"[WARNING] Non-finite loss ({loss.item()}) at batch {batch_idx}, skipping.")
+            return None
+
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
         

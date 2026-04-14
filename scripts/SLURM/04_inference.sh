@@ -12,8 +12,7 @@
 #SBATCH --mail-user=wsobolew@ucsc.edu
 
 set -e
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate uma-fold
+source /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold/.venv/bin/activate
 
 cd /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold
 

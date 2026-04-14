@@ -25,24 +25,15 @@ export WANDB_MODE="offline"
 
 python -c "import torch; torch.set_float32_matmul_precision('high');"
 
-echo "Starting Full UMA-Fold Training Campaign (Curriculum Pipeline)..."
+echo "Resuming Full UMA-Fold Training Campaign from Stage 2..."
 
-# =========================================================================
-# STAGE 1: AGGRESSIVE CROPPING
-# =========================================================================
-# Start with extremely condensed structural environments (neighborhood=15)
-# This forces the model to rapidly learn local chemistry geometry very cheaply.
-echo ">> [STAGE 1] Running 15 Epochs on max_neighborhood=15"
-python scripts/train.py \
-    run_name="pairmixer-stage1-crop15" \
-    ++training.epochs=15 \
-    ++data.datasets.0.cropper.max_neighborhood=15
+# NOTE: Stage 1 is skipped because it successfully completed.
 
 # =========================================================================
 # STAGE 2: INTERMEDIATE CROPPING
 # =========================================================================
 # Widen the perspective (neighborhood=30) and continue learning.
-# We pass ckpt_path="checkpoints/last.ckpt", meaning PyTorch Lightning will
+# We pass ckpt_path="$LATEST_CKPT", meaning PyTorch Lightning will
 # automatically resume step/epoch count from where Stage 1 left off.
 echo ">> [STAGE 2] Running up to Epoch 40 on max_neighborhood=30"
 LATEST_CKPT=$(ls -t checkpoints/last*.ckpt | head -n 1)

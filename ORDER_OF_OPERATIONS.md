@@ -1,62 +1,125 @@
-# UMA-Fold: Order of Operations (A-Z)
+# UMA-Fold: Order of Operations
 
-This checklist walks you through the entire end-to-end pipeline, starting from a blank machine all the way to a fully trained model with inference support on your single-GPU setup.
+End-to-end setup from a blank machine to a trained model.
 
-### Phase 1: Environment & Dependency Setup
-- [ ] **Create the Environment:** 
+---
+
+## Phase 1: Environment Setup
+
+- [ ] **Install uv** (once per user):
   ```bash
-  conda create -n uma-fold python=3.11 -y
-  conda activate uma-fold
-  ```
-- [ ] **Install Boltz (The Engine):** 
-  ```bash
-  git clone https://github.com/jwohlwend/boltz.git
-  pip install -e ./boltz
-  ```
-- [ ] **Install PyTorch & Ecosystem:** 
-  ```bash
-  # Ensure your CUDA version matches (e.g. cu121 for CUDA 12.1)
-  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-  pip install -r requirements.txt
+  curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
 
-### Phase 2: Data Acquisition
-- [ ] **Download the Curated RCSB Dataset:**
-  Run the data download script. It will securely fetch the pre-processed `.npz` targets, `.a3m` MSAs, and symmetry dictionary directly from the Boltz S3 buckets into your local `data/raw/` directory.
+- [ ] **Clone the repo and create the environment:**
   ```bash
-  bash download_trainingdata.txt
+  git clone <repo-url>
+  cd UMA-Fold
+  uv sync --extra dev
+  ```
+  This installs PyTorch (CUDA 12.4 wheels), Boltz 2.2.1 from PyPI, and all other dependencies into `.venv/`. No separate boltz clone needed.
+
+- [ ] **Verify the environment:**
+  ```bash
+  make env-check   # confirms torch version, CUDA availability, bf16 support
   ```
 
-### Phase 3: Configuration Finalization
-- [x] **Finalize `configs/config.yaml` Data Loaders:** 
-  Currently, `configs/config.yaml` has placeholders for `datasets:` and `featurizer:`. You will need to explicitly point these lists to your specific downloaded `data/raw/` folders matching the physical structure of your dataset once extracted. (You can reference `boltz/configs/data/default.yaml` for exact syntax shapes).
+---
 
-### Phase 4: Sanity Testing (The Pilot Run)
-- [ ] **Execute Pilot Run:** 
-  Before scheduling a multi-day training session, check for OOM (Out Of Memory) limits and mismatched tensor loops by passing exactly 1 batch through the entire module pipeline.
-  ```bash
-  python scripts/pilot_run.py
-  ```
-- [ ] **Troubleshoot:** 
-  If it fails, evaluate the stack trace. Typically, it will be a dimension mismatch (e.g., config `token_s` widths not explicitly matching the featurizer lengths). Fix in `config.yaml`.
+## Phase 2: Data Acquisition
 
-### Phase 5: The Training Campaign
-- [ ] **Branch Out:** 
-  Leave `main` untouched as the stable architecture representation.
+- [ ] **Download the RCSB dataset:**
   ```bash
-  git checkout -b training-campaign-1
+  make download
   ```
-- [ ] **Initiate the Full Run:** 
-  Launch the primary training wrapper. Expect 12-24 hours for a full pass over the RCSB datasets.
-  ```bash
-  python scripts/train.py
-  ```
-- [ ] **Monitor:** Check W&B to ensure `val_loss` is decreasing and gradients aren't exploding. 
+  Fetches pre-processed `.npz` structure targets and `.a3m` MSAs from the Boltz-1 S3 bucket into `data/raw/`. Expect ~100–200 GB.
 
-### Phase 6: Fast Inference & Downstream Tasks
-- [ ] **Test Native Inference:**
-  Once you have a mature `.ckpt` file in your `/checkpoints/` directory, simulate a complex cofolding procedure. Start by writing a quick target `.yaml` mimicking Boltz's examples (e.g., a multimer + ligand).
+---
+
+## Phase 3: Sanity Testing
+
+Before scheduling a multi-day job, run a 1-batch pilot to catch OOM errors and shape mismatches:
+
+- [ ] **Run pilot at all three crop sizes:**
   ```bash
-  python scripts/inference.py --yaml examples/target.yaml --ckpt checkpoints/last.ckpt
+  make pilot-all     # submits scripts/SLURM/02_pilot_run.sh (sbatch)
+  # or interactively:
+  make pilot-15
+  make pilot-30
+  make pilot-40
   ```
-- [ ] **Output Connectivity:** Route the coordinates outputted from `inference.py` to a standard `.cif` or `.pdb` writer to load straight into PyMOL.
+
+- [ ] **Run the matmul shape/NaN test:**
+  ```bash
+  python test_matmul_shapes.py
+  ```
+  Should print `SUCCESS` for shape and `No NaN/Inf values` for numerical stability.
+
+- [ ] **Troubleshoot if needed:** Check `logs/SLURM_err/` for stack traces. Most common issues are VRAM OOM (reduce `max_tokens`/`max_atoms` in `configs/config.yaml`) or shape mismatches from config drift.
+
+---
+
+## Phase 4: Training
+
+### Single GPU (24 GB — A5500 / RTX 4090)
+
+- [ ] **Submit the curriculum:**
+  ```bash
+  make train
+  ```
+  Runs three stages sequentially via `scripts/SLURM/03_train_model.sh`:
+  - Stage 1: 15 epochs, crop15 (cheapest)
+  - Stage 2: epochs 15–40, crop30 (resume from Stage 1)
+  - Stage 3: epochs 40–100, crop40 (resume from Stage 2)
+
+### Multi-GPU (4–8× A5500, ~4× faster)
+
+- [ ] **Submit multi-GPU curriculum:**
+  ```bash
+  make train-multi
+  ```
+  Uses `scripts/SLURM/03_train_multi_gpu.sh`. Edit `DEVICES=` and `--gres` in that file to switch between 4 and 8 GPUs.
+
+### Resuming a crashed run
+
+- [ ] **Resume from the latest checkpoint:**
+  ```bash
+  sbatch scripts/SLURM/03_resume_stage2.sh
+  ```
+  The script finds the latest `checkpoints/last*.ckpt` automatically.
+
+### Monitoring
+
+- [ ] **W&B:** Remove `export WANDB_MODE="offline"` and set `WANDB_API_KEY` in the SLURM script to stream metrics live.
+- [ ] **Watch `train_loss`:** Should decrease steadily. Non-finite losses are now silently skipped (logged as a `[WARNING]` line in stdout) — if you see many warnings, check for data issues or too-large a learning rate.
+
+---
+
+## Phase 5: Inference
+
+- [ ] **Verify a checkpoint exists:**
+  ```bash
+  ls checkpoints/
+  ```
+
+- [ ] **Run inference on an example target:**
+  ```bash
+  make inference         # uses boltz/examples/multimer.yaml + checkpoints/last.ckpt
+  ```
+
+- [ ] **Run on your own target:**
+  ```bash
+  make infer-yaml YAML=path/to/target.yaml
+  ```
+
+---
+
+## Utilities
+
+```bash
+make test       # run pytest suite (CPU, no GPU needed)
+make lint       # ruff check
+make lint-fix   # ruff check --fix
+make jobs       # squeue -u $USER
+make env-check  # verify torch + CUDA inside .venv
+```

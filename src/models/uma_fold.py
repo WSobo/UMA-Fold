@@ -13,11 +13,13 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 
 from .pairmixer_block import PairMixerBlock
+from .layers import LinearNoBias
+from .modules.encoders import RelativePositionEncoder
 
-# Import Boltz natively (Requires `pip install -e boltz`)
+# Heavy boltz modules — installed from PyPI (boltz==2.2.1), no local clone needed.
+# Replacement roadmap: InputEmbedder → Phase 2, AtomDiffusion → Phase 3.
 from boltz.model.modules.trunk import InputEmbedder, MSAModule
 from boltz.model.modules.diffusion import AtomDiffusion
-from boltz.model.modules.encoders import RelativePositionEncoder
 
 
 # =========================================================================
@@ -158,15 +160,13 @@ class UMAFold(nn.Module):
         self.token_z = config.get("token_z", 128)
         self.atom_s = config.get("atom_s", 128)
         self.atom_z = config.get("atom_z", 32)
-        
-        # --- 1. Embedding Modules (From Boltz) ---
-        import boltz.data.const as const
-        s_input_dim = (
-            self.token_s + 2 * const.num_tokens + 1 + len(const.pocket_contact_info)
-        )
-        self.s_init = nn.Linear(s_input_dim, self.token_s, bias=False)
-        self.z_init_1 = nn.Linear(s_input_dim, self.token_z, bias=False)
-        self.z_init_2 = nn.Linear(s_input_dim, self.token_z, bias=False)
+
+        # --- 1. Embedding Modules ---
+        from src.data.constants import num_tokens, pocket_contact_info
+        s_input_dim = self.token_s + 2 * num_tokens + 1 + len(pocket_contact_info)
+        self.s_init = LinearNoBias(s_input_dim, self.token_s)
+        self.z_init_1 = LinearNoBias(s_input_dim, self.token_z)
+        self.z_init_2 = LinearNoBias(s_input_dim, self.token_z)
 
         embedder_args = {
             "atoms_per_window_queries": 32,
@@ -182,15 +182,15 @@ class UMAFold(nn.Module):
             **embedder_args
         )
         self.rel_pos = RelativePositionEncoder(self.token_z)
-        self.token_bonds = nn.Linear(1, self.token_z, bias=False)
+        self.token_bonds = LinearNoBias(1, self.token_z)
 
         # Normalization layers
         self.s_norm = nn.LayerNorm(self.token_s)
         self.z_norm = nn.LayerNorm(self.token_z)
 
         # Recycling projections
-        self.s_recycle = nn.Linear(self.token_s, self.token_s, bias=False)
-        self.z_recycle = nn.Linear(self.token_z, self.token_z, bias=False)
+        self.s_recycle = LinearNoBias(self.token_s, self.token_s)
+        self.z_recycle = LinearNoBias(self.token_z, self.token_z)
         
         # --- 2. MSA Module (With Triangle Attention gracefully disabled) ---
         msa_args = {
