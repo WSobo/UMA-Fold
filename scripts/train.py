@@ -69,12 +69,16 @@ def main(cfg: DictConfig):
     # 6. Initialize Trainer
     devices = cfg.training.devices
     # DDP for multi-GPU; "auto" for single GPU (avoids unnecessary process spawning).
-    # find_unused_parameters=False: safe here because all params are touched every
-    # forward pass. Avoids the overhead of DDP's unused-param detection bucket.
+    # find_unused_parameters=True: required because AtomDiffusion/MSAModule have
+    # conditional code paths where some params are skipped on certain forward passes.
     if devices > 1:
-        strategy = DDPStrategy(find_unused_parameters=False)
+        strategy = DDPStrategy(find_unused_parameters=True)
     else:
         strategy = "auto"
+
+    fast_dev_run = cfg.training.get("fast_dev_run", False)
+    if fast_dev_run:
+        print("[CHECK MODE] fast_dev_run=True — running 1 batch only to validate config/model.")
 
     print(f"Setting up Trainer: precision={cfg.training.precision}, devices={devices}, strategy={strategy}...")
     trainer = pl.Trainer(
@@ -88,6 +92,7 @@ def main(cfg: DictConfig):
         gradient_clip_val=cfg.training.get("gradient_clip_val", 1.0),
         log_every_n_steps=cfg.training.log_every_n_steps,
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
+        fast_dev_run=fast_dev_run,
     )
 
     # 7. Train!

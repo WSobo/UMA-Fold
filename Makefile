@@ -47,12 +47,14 @@ help:
 	@echo "  UMA-Fold Makefile"
 	@echo "  ─────────────────────────────────────────────────────────"
 	@echo "  make download       Submit SLURM dataset download job"
+	@echo "  make preflight      CPU pre-flight check (login node, no queue)"
 	@echo "  make pilot          Run 1-batch sanity check on GPU (srun)"
 	@echo "  make pilot-15       Pilot with max_neighborhood=15"
 	@echo "  make pilot-30       Pilot with max_neighborhood=30"
 	@echo "  make pilot-40       Pilot with max_neighborhood=40"
 	@echo "  make train          Submit full curriculum training, 1 GPU (sbatch)"
 	@echo "  make train-multi    Submit full curriculum training, 4× GPU (sbatch)"
+	@echo "  make check-multi    Pre-flight GPU check for DDP (10-min job, no curriculum)"
 	@echo "  make inference      Run inference on $(INFER_YAML) (srun)"
 	@echo "  make test           Run pytest suite (srun, CPU)"
 	@echo "  make lint           Run ruff linter (srun, CPU)"
@@ -124,6 +126,17 @@ train:
 .PHONY: train-multi
 train-multi:
 	sbatch scripts/SLURM/03_train_multi_gpu.sh
+
+# CPU pre-flight: imports, model init, config, data paths. Runs on login node instantly.
+.PHONY: preflight
+preflight:
+	bash -c '$(VENV_ACTIVATE) && python scripts/preflight.py'
+
+# Pre-flight GPU check for DDP: 1 batch with fast_dev_run on GPU (10-min job).
+# Run before train-multi to catch runtime errors without burning queue time.
+.PHONY: check-multi
+check-multi:
+	sbatch scripts/SLURM/check_ddp.sh
 
 
 # ==============================================================================
