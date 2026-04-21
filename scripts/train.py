@@ -42,7 +42,8 @@ def main(cfg: DictConfig):
     model = UMAFoldLightningModule(
         model_config=OmegaConf.to_container(cfg.model, resolve=True),
         lr=cfg.training.lr,
-        compile_model=cfg.training.compile_model
+        compile_model=cfg.training.compile_model,
+        log_feature_nans=cfg.training.get("log_feature_nans", False),
     )
 
     # 4. Setup Logger (W&B)
@@ -54,6 +55,10 @@ def main(cfg: DictConfig):
     )
     
     # 5. Setup Callbacks
+    # save_last=False: last.ckpt was overwritten with NaN-poisoned weights across
+    # an entire curriculum stage in the prior run, which silently corrupted every
+    # subsequent stage. Relying on the top-k monitor (mode="min" over train_loss)
+    # is NaN-safe because +inf sentinels logged on non-finite epochs are rejected.
     callbacks = [
         ModelCheckpoint(
             dirpath="checkpoints/",
@@ -61,7 +66,7 @@ def main(cfg: DictConfig):
             monitor="train_loss",
             mode="min",
             save_top_k=3,
-            save_last=True
+            save_last=False,
         ),
         LearningRateMonitor(logging_interval="step")
     ]
@@ -69,10 +74,12 @@ def main(cfg: DictConfig):
     # 6. Initialize Trainer
     devices = cfg.training.devices
     # DDP for multi-GPU; "auto" for single GPU (avoids unnecessary process spawning).
-    # find_unused_parameters=True: required because AtomDiffusion/MSAModule have
-    # conditional code paths where some params are skipped on certain forward passes.
+    # static_graph=True: required because fairscale's reentrant gradient
+    # checkpointing replays backward through the same params twice, which
+    # otherwise trips DDP's "marked ready twice" assertion. static_graph also
+    # lets DDP handle unused params automatically, replacing find_unused_parameters.
     if devices > 1:
-        strategy = DDPStrategy(find_unused_parameters=True)
+        strategy = DDPStrategy(static_graph=True)
     else:
         strategy = "auto"
 

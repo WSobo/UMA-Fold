@@ -1,21 +1,21 @@
 #!/bin/bash
 # ==============================================================================
-# UMA-Fold Multi-GPU Curriculum Training
+# UMA-Fold Multi-GPU — Resume from Stage 2
 # ==============================================================================
-# Runs the full 3-stage curriculum on 4× A5500 GPUs (96 GB total VRAM).
-# Effective batch size = devices × batch_size_per_gpu = 4 × 1 = 4, same as
-# single-GPU with accumulate_grad_batches=4 — so learning dynamics are identical
-# but training is ~4× faster.
+# Purpose: resume the curriculum at Stage 2 (crop30) using the best finite
+# checkpoint from a prior Stage 1 run. Skips Stage 1 entirely. Runs on 4 GPUs.
 #
-# Launcher semantics: SLURM starts one task per GPU (--ntasks-per-node=4) and
-# `srun python scripts/train.py ...` spawns one training process per task.
-# Lightning's SLURMEnvironment picks up SLURM_LOCALID/WORLD_SIZE so DDP actually
-# engages. The previous --ntasks=1 + bare `python` silently ran on 1 GPU only.
+# Why this exists: the overnight run of 03_train_model.sh (single-GPU) cold-
+# started Stage 2 because its `ls -t checkpoints/last*.ckpt` resume glob went
+# stale after we removed `save_last=True` in P0.2. Stage 1's weights
+# (uma-fold-epoch=14-train_loss=0.7179.ckpt, verified finite) were discarded at
+# the stage boundary. This script picks them back up via best_ckpt() and
+# continues to Stage 2 and Stage 3 on 4 GPUs with proper DDP launch semantics.
 #
-# To use 8 GPUs instead:
-#   Change --gres=gpu:A5500:8, --ntasks-per-node=8, and DEVICES=8.
+# DDP launch: --ntasks-per-node=4 + `srun python scripts/train.py ...` spawns
+# one process per GPU so Lightning's SLURMEnvironment sees WORLD_SIZE=4.
 # ==============================================================================
-#SBATCH --job-name=uma-train-multi
+#SBATCH --job-name=uma-resume-stage2-multi
 #SBATCH --output=/private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold/logs/SLURM_out/train_multi_%j.out
 #SBATCH --error=/private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold/logs/SLURM_err/train_multi_%j.err
 #SBATCH --time=96:00:00
@@ -35,17 +35,12 @@ cd /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold
 
 export WANDB_MODE="offline"
 
-# Number of GPUs — must match --ntasks-per-node and --gres above
 DEVICES=4
 
-# Resume picks the best monitored checkpoint (lowest train_loss) rather than
-# last.ckpt. Protects against the scenario where a NaN event at epoch-end
-# overwrites last.ckpt and poisons the next curriculum stage.
 # Iterate monitored checkpoints in ascending train_loss order, validate each
 # via preflight --ckpt-only, and return the first whose weights are all finite.
-# Guards against resume-from-NaN: the prior run's "best" (lowest-loss) checkpoint
-# at epoch 14 was silently NaN-poisoned while the monitored metric logged as
-# finite — sorting alone would have returned a dead file.
+# Same helper used by 03_train_multi_gpu.sh — factored inline so this script is
+# self-contained.
 best_ckpt() {
     local candidates ckpt
     candidates=$(ls checkpoints/uma-fold-epoch=*.ckpt 2>/dev/null \
@@ -67,19 +62,7 @@ best_ckpt() {
     return 1
 }
 
-echo "Starting Multi-GPU UMA-Fold Training Campaign (${DEVICES}× A5500)..."
-
-# =========================================================================
-# STAGE 1: AGGRESSIVE CROPPING
-# =========================================================================
-echo ">> [STAGE 1] ${DEVICES}-GPU, 15 Epochs, max_neighborhood=15"
-srun python scripts/train.py \
-    run_name="pairmixer-multi${DEVICES}gpu-stage1-crop15" \
-    ++training.epochs=15 \
-    ++training.devices=${DEVICES} \
-    ++training.accumulate_grad_batches=1 \
-    ++data.num_workers=4 \
-    ++data.datasets.0.cropper.max_neighborhood=15
+echo "Resuming Multi-GPU UMA-Fold Training from Stage 2 (${DEVICES}× A5500)..."
 
 # =========================================================================
 # STAGE 2: INTERMEDIATE CROPPING
@@ -87,10 +70,11 @@ srun python scripts/train.py \
 LATEST_CKPT=$(best_ckpt)
 echo ">> [STAGE 2] ${DEVICES}-GPU, up to Epoch 40, max_neighborhood=30, resume=${LATEST_CKPT}"
 srun python scripts/train.py \
-    run_name="pairmixer-multi${DEVICES}gpu-stage2-crop30" \
+    run_name="pairmixer-multi${DEVICES}gpu-resume-stage2-crop30" \
     ++training.epochs=40 \
     ++training.devices=${DEVICES} \
     ++training.accumulate_grad_batches=1 \
+    ++training.log_feature_nans=true \
     ++data.num_workers=4 \
     ++data.datasets.0.cropper.max_neighborhood=30 \
     ++training.ckpt_path="'${LATEST_CKPT}'"
@@ -101,12 +85,13 @@ srun python scripts/train.py \
 LATEST_CKPT=$(best_ckpt)
 echo ">> [STAGE 3] ${DEVICES}-GPU, up to Epoch 100, max_neighborhood=40, resume=${LATEST_CKPT}"
 srun python scripts/train.py \
-    run_name="pairmixer-multi${DEVICES}gpu-stage3-crop40" \
+    run_name="pairmixer-multi${DEVICES}gpu-resume-stage3-crop40" \
     ++training.epochs=100 \
     ++training.devices=${DEVICES} \
     ++training.accumulate_grad_batches=1 \
+    ++training.log_feature_nans=true \
     ++data.num_workers=4 \
     ++data.datasets.0.cropper.max_neighborhood=40 \
     ++training.ckpt_path="'${LATEST_CKPT}'"
 
-echo "Multi-GPU Curriculum Campaign Complete!"
+echo "Multi-GPU Resume Campaign Complete!"

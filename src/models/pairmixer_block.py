@@ -14,6 +14,37 @@ from torch import nn, Tensor
 
 from src.models.layers import Transition
 
+
+class DropoutRowwise(nn.Module):
+    """Shared-axis dropout: drops entire rows of the pair matrix (same mask
+    applied across all columns). AF2 uses this on the outgoing tri-mul residual
+    to preserve the k-summation structure that plain per-element dropout breaks.
+    """
+    def __init__(self, p: float):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x: Tensor) -> Tensor:  # x: [B, L_i, L_j, C]
+        if not self.training or self.p == 0.0:
+            return x
+        mask = x.new_empty(x.shape[0], x.shape[1], 1, 1).bernoulli_(1 - self.p) / (1 - self.p)
+        return x * mask
+
+
+class DropoutColumnwise(nn.Module):
+    """Shared-axis dropout: drops entire columns (same mask applied across all
+    rows). Used on the incoming tri-mul residual."""
+    def __init__(self, p: float):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x: Tensor) -> Tensor:  # x: [B, L_i, L_j, C]
+        if not self.training or self.p == 0.0:
+            return x
+        mask = x.new_empty(x.shape[0], 1, x.shape[2], 1).bernoulli_(1 - self.p) / (1 - self.p)
+        return x * mask
+
+
 class CustomTriangleMultiplicationOutgoing(nn.Module):
     """
     Explicit cuBLAS Matmul implementation of Outgoing Triangle Multiplication.
@@ -121,18 +152,23 @@ class PairMixerBlock(nn.Module):
             drop_rate: Dropout probability.
         """
         super().__init__()
-        
+
         # 1. Custom Triangle Multiplication (Incoming Edges)
         self.tri_mul_in = CustomTriangleMultiplicationIncoming(dim=c_z, c_hidden_mul=c_hidden_mul)
-        
+
         # 2. Custom Triangle Multiplication (Outgoing Edges)
         self.tri_mul_out = CustomTriangleMultiplicationOutgoing(dim=c_z, c_hidden_mul=c_hidden_mul)
-        
+
         # 3. Pair Transition (Feed-Forward Network applied across all pairs)
         self.transition = Transition(
-            dim=c_z, 
+            dim=c_z,
             hidden=c_z * 4
         )
+
+        # AF2-style shared-axis dropout on tri-mul residuals; standard on transition.
+        self.drop_in  = DropoutColumnwise(drop_rate)
+        self.drop_out = DropoutRowwise(drop_rate)
+        self.drop_ffn = nn.Dropout(drop_rate)
 
     def forward(self, z: Tensor, mask: Tensor | None = None) -> Tensor:
         """
@@ -153,12 +189,12 @@ class PairMixerBlock(nn.Module):
         # using explicit torch.matmul to bypass einsum VRAM spikes.
 
         # --- 1. Triangle Multiplication (Incoming) ---
-        z = z + self.tri_mul_in(z, mask=mask)
-        
+        z = z + self.drop_in(self.tri_mul_in(z, mask=mask))
+
         # --- 2. Triangle Multiplication (Outgoing) ---
-        z = z + self.tri_mul_out(z, mask=mask)
-        
+        z = z + self.drop_out(self.tri_mul_out(z, mask=mask))
+
         # --- 3. Pair Transition (FFN) ---
-        z = z + self.transition(z)
+        z = z + self.drop_ffn(self.transition(z))
 
         return z

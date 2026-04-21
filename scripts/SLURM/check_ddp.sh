@@ -30,7 +30,36 @@ cd /private/groups/yehlab/wsobolew/02_projects/computational/UMA-Fold
 
 echo "=== UMA-Fold Pre-Flight Check (CPU / medium partition) ==="
 
+# Iterate monitored checkpoints in ascending train_loss order and validate each
+# via preflight --ckpt-only. First clean candidate becomes the resume target
+# for the upcoming GPU run. Any poisoned checkpoints are reported but skipped.
+echo "--- Scanning monitored checkpoints for a clean resume candidate ---"
+BEST_CKPT=""
+for ckpt in $(ls checkpoints/uma-fold-epoch=*.ckpt 2>/dev/null \
+        | sed -E 's/.*train_loss=([0-9.]+)\.ckpt$/\1 &/' \
+        | sort -g \
+        | cut -d' ' -f2-); do
+    if python scripts/preflight.py --check-ckpt "$ckpt" --ckpt-only 2>&1 \
+            | grep -q '^\[ OK \]'; then
+        BEST_CKPT="$ckpt"
+        echo "✓ Clean resume candidate: $BEST_CKPT"
+        break
+    else
+        echo "✗ NaN-poisoned (skipped): $ckpt"
+    fi
+done
+
+if [ -z "$BEST_CKPT" ]; then
+    echo "No prior checkpoints found — would start training from scratch."
+fi
+
+CHECK_ARGS=""
+if [ -n "${BEST_CKPT}" ]; then
+    CHECK_ARGS="--check-ckpt ${BEST_CKPT}"
+fi
+
 python scripts/preflight.py \
+    ${CHECK_ARGS} \
     ++training.devices=4
 
 echo "=== Pre-Flight PASSED — safe to run make train-multi ==="

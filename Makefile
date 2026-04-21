@@ -54,6 +54,7 @@ help:
 	@echo "  make pilot-40       Pilot with max_neighborhood=40"
 	@echo "  make train          Submit full curriculum training, 1 GPU (sbatch)"
 	@echo "  make train-multi    Submit full curriculum training, 4× GPU (sbatch)"
+	@echo "  make resume-stage2-multi  Resume curriculum at Stage 2, 4× GPU (sbatch)"
 	@echo "  make check-multi    Pre-flight GPU check for DDP (10-min job, no curriculum)"
 	@echo "  make inference      Run inference on $(INFER_YAML) (srun)"
 	@echo "  make test           Run pytest suite (srun, CPU)"
@@ -126,6 +127,12 @@ train:
 .PHONY: train-multi
 train-multi:
 	sbatch scripts/SLURM/03_train_multi_gpu.sh
+
+# Resume curriculum at Stage 2 on 4 GPUs. Uses best_ckpt() to find the finite
+# lowest-loss Stage 1 checkpoint; skips Stage 1 entirely.
+.PHONY: resume-stage2-multi
+resume-stage2-multi:
+	sbatch scripts/SLURM/04_resume_stage2_multi_gpu.sh
 
 # CPU pre-flight: imports, model init, config, data paths. Runs on login node instantly.
 .PHONY: preflight

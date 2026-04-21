@@ -9,6 +9,7 @@ Usage:
     python scripts/preflight.py                      # default config
     python scripts/preflight.py ++training.devices=4 # multi-GPU config
     python scripts/preflight.py ++training.ckpt_path=checkpoints/last.ckpt
+    python scripts/preflight.py --check-ckpt <path>  # validate ckpt weights
 """
 
 import os
@@ -34,13 +35,98 @@ def check(label, fn):
         return False
 
 
+def check_ckpt_weights(path: str) -> bool:
+    """
+    Load a checkpoint's state_dict and assert every floating-point tensor is
+    finite. Guards against resuming from a NaN-poisoned checkpoint — the exact
+    failure mode that made the prior run's stages 2 and 3 train on dead weights.
+    Returns True if clean, False if poisoned or unreadable.
+    """
+    import torch
+
+    if not os.path.exists(path):
+        print(f"{FAIL} --check-ckpt: file not found: {path}")
+        return False
+
+    try:
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as e:
+        print(f"{FAIL} --check-ckpt: failed to load {path}")
+        print(f"       {type(e).__name__}: {e}")
+        return False
+
+    state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+    if not isinstance(state, dict):
+        print(f"{FAIL} --check-ckpt: unexpected checkpoint structure in {path}")
+        return False
+
+    total, bad = 0, []
+    for name, tensor in state.items():
+        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+            continue
+        total += 1
+        if not torch.isfinite(tensor).all():
+            bad.append(name)
+
+    if bad:
+        print(f"{FAIL} --check-ckpt: {len(bad)}/{total} tensors non-finite in {path}")
+        for name in bad[:10]:
+            print(f"       NaN/Inf: {name}")
+        if len(bad) > 10:
+            print(f"       ... +{len(bad) - 10} more")
+        return False
+
+    size_mb = os.path.getsize(path) / 1e6
+    print(f"{PASS} --check-ckpt: {total:,} tensors all finite ({size_mb:.0f} MB)  {path}")
+    return True
+
+
 def main():
     import hydra
     from omegaconf import DictConfig, OmegaConf
     from hydra import compose, initialize_config_dir
 
+    # Extract --check-ckpt <path> and --ckpt-only before passing overrides to Hydra.
+    # --ckpt-only exits right after the ckpt check, without running imports/config/model
+    # checks. Used by best_ckpt() in the SLURM scripts to cheaply iterate candidates.
+    args = sys.argv[1:]
+    ckpt_to_validate = None
+    ckpt_only = False
+    remaining = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--check-ckpt":
+            if i + 1 >= len(args):
+                print(f"{FAIL} --check-ckpt requires a path argument")
+                sys.exit(1)
+            ckpt_to_validate = args[i + 1]
+            i += 2
+        elif args[i].startswith("--check-ckpt="):
+            ckpt_to_validate = args[i].split("=", 1)[1]
+            i += 1
+        elif args[i] == "--ckpt-only":
+            ckpt_only = True
+            i += 1
+        else:
+            remaining.append(args[i])
+            i += 1
+    sys.argv = [sys.argv[0]] + remaining
+
+    if ckpt_only and ckpt_to_validate is None:
+        print(f"{FAIL} --ckpt-only requires --check-ckpt <path>")
+        sys.exit(1)
+
     ok = True
     print("\n=== UMA-Fold Pre-Flight Check ===\n")
+
+    # ── Checkpoint weight validation (if requested) ────────────────────────────
+    if ckpt_to_validate is not None:
+        print("--- Checkpoint weight validation ---")
+        ok &= check_ckpt_weights(ckpt_to_validate)
+        print()
+
+        if ckpt_only:
+            sys.exit(0 if ok else 1)
 
     # ── 1. Imports ─────────────────────────────────────────────────────────────
     print("--- Imports ---")
@@ -128,14 +214,14 @@ def main():
         print("\n--- DDP Parameter Check (CPU) ---")
 
         def check_grad_coverage():
-            # Fake a forward pass using random tensors is too complex (boltz data format).
-            # Instead: verify find_unused_parameters is True, which is the safe setting.
+            # Fake-data forward pass is too complex (boltz data format). Instead
+            # verify static_graph=True is set — required for reentrant gradient
+            # checkpointing (fairscale) to coexist with DDP's bucket assertions.
             from pytorch_lightning.strategies import DDPStrategy
-            strat = DDPStrategy(find_unused_parameters=True)
-            # Confirm the flag is set correctly
-            if not strat._ddp_kwargs.get("find_unused_parameters", False):
-                raise RuntimeError("find_unused_parameters is not True — will crash at runtime")
-            return "find_unused_parameters=True confirmed"
+            strat = DDPStrategy(static_graph=True)
+            if not strat._ddp_kwargs.get("static_graph", False):
+                raise RuntimeError("static_graph is not True — reentrant checkpoint will crash DDP")
+            return "static_graph=True confirmed"
 
         ok &= check("DDPStrategy config", check_grad_coverage)
 
