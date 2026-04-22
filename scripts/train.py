@@ -44,6 +44,7 @@ def main(cfg: DictConfig):
         lr=cfg.training.lr,
         compile_model=cfg.training.compile_model,
         log_feature_nans=cfg.training.get("log_feature_nans", False),
+        log_activation_magnitudes=cfg.training.get("log_activation_magnitudes", False),
     )
 
     # 4. Setup Logger (W&B)

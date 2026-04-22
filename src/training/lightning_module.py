@@ -13,6 +13,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, SequentialLR
 from typing import Any, Dict
 
+from boltz.model.modules.encoders import AtomAttentionEncoder
 from src.models.uma_fold import UMAFold
 
 
@@ -28,6 +29,7 @@ class UMAFoldLightningModule(pl.LightningModule):
         lr: float = 1e-3,
         compile_model: bool = True,
         log_feature_nans: bool = False,
+        log_activation_magnitudes: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -37,6 +39,14 @@ class UMAFoldLightningModule(pl.LightningModule):
         # Diagnostic toggle surfaced by scripts/train.py via cfg.training.log_feature_nans.
         # When True, UMAFold.forward logs input-feature keys that arrive non-finite.
         self.model._log_feature_nans = bool(log_feature_nans)
+        # Activation-magnitude tracing inside AtomAttentionEncoder.forward, used to
+        # localize the bf16 backward-overflow site. The gate is checked inside the
+        # encoder itself, so the attribute must be set on every AtomAttentionEncoder
+        # instance in the module tree (UMAFold wires two of them — one in
+        # input_embedder, one inside structure_module/AtomDiffusion).
+        for m in self.model.modules():
+            if isinstance(m, AtomAttentionEncoder):
+                m._log_activation_magnitudes = bool(log_activation_magnitudes)
 
         # --- CUDA Optimizations ---
         # 1. Enable TF32 for matrix multiplications (uses Ampere/Ada Tensor Cores natively)
@@ -85,11 +95,19 @@ class UMAFoldLightningModule(pl.LightningModule):
         self.log("nonfinite_loss_rate", 0.0, on_step=True, sync_dist=True)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        # Per-component breakdown so we can see which term blows up first when it does
+        # Per-component breakdown so we can see which term blows up first when it does.
+        # Boltz's AtomDiffusion.compute_loss nests the per-term tensors inside a
+        # loss_breakdown dict — flatten one level so mse_loss / smooth_lddt_loss /
+        # etc. actually show up in wandb.
         for key, val in loss_dict.items():
-            if key == "loss" or not torch.is_tensor(val):
+            if key == "loss":
                 continue
-            if val.dim() == 0 and torch.isfinite(val):
+            if isinstance(val, dict):
+                for subkey, subval in val.items():
+                    if torch.is_tensor(subval) and subval.dim() == 0 and torch.isfinite(subval):
+                        self.log(f"train_{subkey}", subval.detach(), on_step=True, sync_dist=True)
+                continue
+            if torch.is_tensor(val) and val.dim() == 0 and torch.isfinite(val):
                 self.log(f"train_{key}", val.detach(), on_step=True, sync_dist=True)
 
         return loss
